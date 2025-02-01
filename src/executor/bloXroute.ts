@@ -54,7 +54,7 @@ import { BLOXROUTE_AUTH_HEADER, BLOXROUTE_FEE, PRIVATE_KEY } from "../constants"
     const response = await provider.postSubmit(request);
   
     if (response.signature) {
-      return response.signature
+      return response.signature.toString()
     } else {
       return false
     }

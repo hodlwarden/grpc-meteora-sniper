@@ -3,20 +3,15 @@ import Client, {
     CommitmentLevel,
     SubscribeRequest,
     SubscribeUpdate,
-    SubscribeUpdateTransaction,
 } from "@triton-one/yellowstone-grpc";
-import { Message, CompiledInstruction } from "@triton-one/yellowstone-grpc/dist/grpc/solana-storage";
 import { ClientDuplexStream } from '@grpc/grpc-js';
-import { Connection, Keypair, PublicKey, VersionedTransactionResponse } from '@solana/web3.js';
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import dotenv from 'dotenv';
 import { BUY_AMOUNT, GRPC_ENDPOINT, GRPC_TOKEN, PRIVATE_KEY, RPC_ENDPOINT } from "./constants";
-import { SolanaParser } from "@shyft-to/solana-transaction-parser";
-import meteoraDlmmIdl from './idls/meteora_dlmm.json';
-import { Idl } from "@project-serum/anchor";
 import { saveToJSONFile } from "./utils";
-import { log } from "console";
-import { swapOnMeteora } from "./utils/meteoraSwap";
+import { fetchPoolOnMeteoraDYN, swapOnMeteora, swapOnMeteoraDYN } from "./utils/meteoraSwap";
+import { BN } from "bn.js";
 
 dotenv.config()
 
@@ -27,11 +22,11 @@ const METEORA_DLMM_PROGRAM_ID = new PublicKey(
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
 );
 const METEORA_AMM_PROGRAM_ID = new PublicKey(
-  "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",
+    "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",
 );
-const METEORA_VAULT_PROGRAM_ID = new PublicKey(
-  "24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi",
-);
+// const METEORA_VAULT_PROGRAM_ID = new PublicKey(
+//     "24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi",
+// );
 
 // Main function
 async function main(): Promise<void> {
@@ -62,7 +57,6 @@ function createSubscribeRequest(): SubscribeRequest {
                 accountInclude: [
                     METEORA_DLMM_PROGRAM_ID.toBase58(),
                     METEORA_AMM_PROGRAM_ID.toBase58(),
-                    METEORA_VAULT_PROGRAM_ID.toString()
                 ],
                 accountExclude: [],
                 accountRequired: [],
@@ -119,7 +113,6 @@ function handleStreamEvents(stream: ClientDuplexStream<SubscribeRequest, Subscri
     });
 }
 
-
 async function handleData(data: SubscribeUpdate) {
     if (data.transaction) {
         const transaction = data.transaction;
@@ -131,26 +124,62 @@ async function handleData(data: SubscribeUpdate) {
             }
         })
         if (isCreateLiquidity && isCreateLiquidity?.length > 0) {
-            const accountKeys = transaction.transaction?.transaction?.message?.accountKeys;
             const postBalances = transaction.transaction?.meta?.postTokenBalances;
 
             if (!postBalances || postBalances?.length === 0) return
             const poolId = postBalances[0].owner
-            // const accounts: string[] = [];
-            // if(!accountKeys) return
-
-            // for (let i = 0; i < accountKeys.length; i++) {
-            //     const account = accountKeys[i];
-            //     accounts.push(convertData(account))
-            // }
 
             const tx = convertData(transaction.transaction?.signature!);
             saveToJSONFile({tx})
             console.log(`https://solscan.io/tx/${tx}`);
-            console.log("Pool Id => ", poolId);
+            console.log("Found new DLMM pool! Pool Id : ", `https://app.meteora.ag/dlmm/${poolId}`);
             const sig = await tryBuyUntilSuccess(poolId);
-            console.log("Buy Success: ", sig)
-            process.exit(1)
+            console.log("Buy Success: ", sig);
+            return
+        }
+
+        const isVault = logMessages?.filter((item) => {
+            if (item.indexOf('Instruction: InitializeMint2') > -1) {
+                return true
+            }
+        })
+        if (isVault && isVault.length !== 0) {
+            saveToJSONFile(transaction);
+            const tx = convertData(transaction.transaction?.signature!);
+            const accounts: string[] = [];
+            const accountKeys = transaction.transaction?.transaction?.message?.accountKeys;
+            if (!accountKeys) return
+            for (let i = 0; i < accountKeys.length; i++) {
+                const account = accountKeys[i];
+                accounts.push(convertData(account));
+            }
+            let poolId = '';
+            const start = Date.now();
+            for (let i = 1; i < accounts.length; i++) {
+                const accountPub = new PublicKey(accounts[i])
+                const isPool = await fetchPoolOnMeteoraDYN(solanaConnection, accountPub, keypair);
+                if (isPool) {
+                    poolId = accounts[i];
+                    break;
+                } else {
+                    continue
+                }
+            }
+            console.log(Date.now() - start);
+            console.log("Found new DYN pool! PoolId : ", poolId)
+            console.log(`https://solscan.io/tx/${tx}`);
+            if(poolId === '') return
+            const poolPub = new PublicKey(poolId)
+            const buyAmount = new BN(BUY_AMOUNT * LAMPORTS_PER_SOL)
+            const sig = await swapOnMeteoraDYN(solanaConnection, poolPub, keypair, buyAmount, false)
+            console.log(Date.now() - start);
+            if (sig) {
+                console.log("Buy Success :", `https://solscan.io/tx/${sig}`);
+                return
+            } else {
+                console.log("Buy failed!")
+                return
+            }
         }
 
     }
@@ -160,7 +189,7 @@ const tryBuyUntilSuccess = async (poolId: string): Promise<string> => {
     return new Promise((resolve) => {
         const monitor = setInterval(async () => {
             const sig = await swapOnMeteora(solanaConnection, keypair, BUY_AMOUNT, false, poolId);
-            if(sig) {
+            if (sig) {
                 clearInterval(monitor);
                 resolve(`https://solscan.io/tx/${sig}`)
             } else if (sig !== null) {
@@ -181,7 +210,9 @@ main().catch((err) => {
 });
 
 // const buyTest = async () => {
-//     await swapOnMeteora(solanaConnection, keypair, BUY_AMOUNT, false, 'GDTJg5dcsGYm9E9oPXcnFBLw7eDBrjtMUa1U2APZ7aKe')
+//     const poolPub = new PublicKey('91o4d94CUyaQ9MrffzPRXsxAQRPUkDtzyaMMAcj2J5Gx')
+//     const buyAmount = new BN(BUY_AMOUNT * LAMPORTS_PER_SOL)
+//     await swapOnMeteoraDYN(solanaConnection, poolPub, keypair, buyAmount, false)
 // }
 
 // buyTest()
