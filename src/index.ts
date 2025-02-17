@@ -72,6 +72,7 @@ function createSubscribeRequest(): SubscribeRequest {
     };
 }
 
+
 function sendSubscribeRequest(
     stream: ClientDuplexStream<SubscribeRequest, SubscribeUpdate>,
     request: SubscribeRequest
@@ -130,7 +131,6 @@ async function handleData(data: SubscribeUpdate) {
             const poolId = postBalances[0].owner
 
             const tx = convertData(transaction.transaction?.signature!);
-            saveToJSONFile({tx})
             console.log(`https://solscan.io/tx/${tx}`);
             console.log("Found new DLMM pool! Pool Id : ", `https://app.meteora.ag/dlmm/${poolId}`);
             const sig = await tryBuyUntilSuccess(poolId);
@@ -144,7 +144,6 @@ async function handleData(data: SubscribeUpdate) {
             }
         })
         if (isVault && isVault.length !== 0) {
-            saveToJSONFile(transaction);
             const tx = convertData(transaction.transaction?.signature!);
             const accounts: string[] = [];
             const accountKeys = transaction.transaction?.transaction?.message?.accountKeys;
