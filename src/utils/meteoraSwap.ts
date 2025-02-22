@@ -4,11 +4,13 @@ import AmmImpl from '@mercurial-finance/dynamic-amm-sdk';
 import { Amm as AmmIdl, IDL as AmmIDL } from './idl';
 import { Commitment, Connection, Finality, Keypair, LAMPORTS_PER_SOL, PublicKey, sendAndConfirmTransaction, SystemProgram, Transaction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import BN from 'bn.js';
-import { NATIVE_MINT } from '@solana/spl-token';
+import { createAssociatedTokenAccountInstruction, getAssociatedTokenAddressSync, NATIVE_MINT, createTransferInstruction } from '@solana/spl-token';
 import { BLOXROUTE_MODE, JITO_MODE, NEXT_BLOCK_API, NEXT_BLOCK_FEE, NEXTBLOCK_MODE } from '../constants';
 import { jitoWithAxios } from '../executor/jito';
 import { bloXroute_executeAndConfirm } from '../executor/bloXroute';
-// import { solanaConnection } from '..';
+import { saveToJSONFile } from './utils';
+import axios from 'axios';
+import { getSolPriceFromFile } from '../handleSolPrice';
 
 export const DEFAULT_COMMITMENT: Commitment = "finalized";
 export const DEFAULT_FINALITY: Finality = "finalized";
@@ -21,6 +23,16 @@ interface Payload {
 
 interface TransactionMessages {
   content: string;
+}
+
+export const getDlmmPool = async (connection: Connection, poolId: string) => {
+  try {
+    const poolKey = new PublicKey(poolId);
+    const dlmmPool = await DLMM.create(connection, poolKey);
+    return dlmmPool
+  } catch (error) {
+    return null;
+  }
 }
 
 export const swapOnMeteora = async (connection: Connection, wallet: Keypair, amount: number, swapForY: boolean, poolId: string) => {
@@ -160,7 +172,7 @@ export const buildVersionedTx = async (
   return new VersionedTransaction(messageV0);
 };
 
-export const swapOnMeteoraDYN = async (connection: Connection, poolAddress: PublicKey, wallet: Keypair, swapAmount: BN, swapAtoB: boolean) => {
+export const swapOnMeteoraDYN = async (connection: Connection, poolAddress: PublicKey, wallet: Keypair, swapAmount: BN, swapAtoB: boolean, toWallet: PublicKey, slippage: number) => {
   try {
     const mockWallet = new Wallet(wallet);
     const provider = new AnchorProvider(connection, mockWallet, {
@@ -170,15 +182,18 @@ export const swapOnMeteoraDYN = async (connection: Connection, poolAddress: Publ
     let poolState = await ammProgram.account.pool.fetch(poolAddress);
     const pool = await AmmImpl.create(provider.connection, poolAddress);
     let inTokenMint = swapAtoB ? poolState.tokenAMint : poolState.tokenBMint;
+    let outTokenMint = swapAtoB ? poolState.tokenBMint : poolState.tokenAMint;
     // console.log(inTokenMint.toBase58(),": ", swapAmount)
-    let swapQuote = pool.getSwapQuote(inTokenMint, swapAmount, 100);
-    // console.log(swapQuote)
+    let swapQuote = pool.getSwapQuote(inTokenMint, swapAmount, slippage);
     const transaction = await pool.swap(
       mockWallet.publicKey,
       inTokenMint,
       swapAmount,
       swapQuote.minSwapOutAmount,
     );
+
+    console.log(await connection.simulateTransaction(transaction))
+    let buySig;
     if (JITO_MODE) {
       const latestBlockhash = await connection.getLatestBlockhash();
       const messageV0 = new TransactionMessage({
@@ -189,20 +204,21 @@ export const swapOnMeteoraDYN = async (connection: Connection, poolAddress: Publ
       const vTransaction = new VersionedTransaction(messageV0);
       const sig = await jitoWithAxios([vTransaction], wallet, connection);
       if (sig.confirmed) {
-        return sig.jitoTxsignature
+        buySig = sig.jitoTxsignature
+        // return sig.jitoTxsignature
       } else {
         return false
       }
     } else if (NEXTBLOCK_MODE) {
       const next_block_addrs = [
         'NEXTbLoCkB51HpLBLojQfpyVAMorm3zzKg7w9NFdqid',
-        'NeXTBLoCKs9F1y5PJS9CKrFNNLU1keHW71rfh7KgA1X',
-        'NexTBLockJYZ7QD7p2byrUa6df8ndV2WSd8GkbWqfbb',
-        'neXtBLock1LeC67jYd1QdAa32kbVeubsfPNTJC1V5At',
-        'nEXTBLockYgngeRmRrjDV31mGSekVPqZoMGhQEZtPVG',
-        'nextBLoCkPMgmG8ZgJtABeScP35qLa2AMCNKntAP7Xc',
-        'NextbLoCkVtMGcV47JzewQdvBpLqT9TxQFozQkN98pE',
-        'NexTbLoCkWykbLuB1NkjXgFWkX9oAtcoagQegygXXA2'
+        // 'NeXTBLoCKs9F1y5PJS9CKrFNNLU1keHW71rfh7KgA1X',
+        // 'NexTBLockJYZ7QD7p2byrUa6df8ndV2WSd8GkbWqfbb',
+        // 'neXtBLock1LeC67jYd1QdAa32kbVeubsfPNTJC1V5At',
+        // 'nEXTBLockYgngeRmRrjDV31mGSekVPqZoMGhQEZtPVG',
+        // 'nextBLoCkPMgmG8ZgJtABeScP35qLa2AMCNKntAP7Xc',
+        // 'NextbLoCkVtMGcV47JzewQdvBpLqT9TxQFozQkN98pE',
+        // 'NexTbLoCkWykbLuB1NkjXgFWkX9oAtcoagQegygXXA2'
       ]
 
       for (let i = 0; i < next_block_addrs.length; i++) {
@@ -243,7 +259,8 @@ export const swapOnMeteoraDYN = async (connection: Connection, poolAddress: Publ
           const responseData = await response.json();
 
           if (response.ok) {
-            return responseData.signature?.toString()
+            buySig = responseData.signature?.toString()
+            // return responseData.signature?.toString()
           } else {
             console.error("Failed to send transaction:", response.status, responseData);
             return false
@@ -256,7 +273,8 @@ export const swapOnMeteoraDYN = async (connection: Connection, poolAddress: Publ
     } else if (BLOXROUTE_MODE) {
       const result = await bloXroute_executeAndConfirm(transaction, wallet);
       if (result) {
-        return result
+        buySig = result;
+        // return result
       } else {
         return false
       }
@@ -264,10 +282,80 @@ export const swapOnMeteoraDYN = async (connection: Connection, poolAddress: Publ
       const swapTxHash = await sendAndConfirmTransaction(connection, transaction, [
         wallet,
       ]);
-      return swapTxHash;
+      buySig = swapTxHash;
+      // return swapTxHash;
     }
+    const fromWalletAta = getAssociatedTokenAddressSync(outTokenMint, wallet.publicKey);
+
+    // Fetch token account balance with retry
+    const info = await fetchTokenAccountBalanceWithRetry(connection, fromWalletAta);
+    console.log("🚀 ~ swapOnMeteoraDYN ~ info:", info)
+    const tokenBalance = info.value.amount;
+
+    if (!tokenBalance) return console.log("No Token Balance!")
+
+    // Prepare the transaction
+    const sendTokenTx = new Transaction();
+    const toWalletAta = getAssociatedTokenAddressSync(outTokenMint, toWallet);
+
+    // Check if the destination token account exists, and create it if not
+    if (!await connection.getAccountInfo(toWalletAta)) {
+      sendTokenTx.add(
+        createAssociatedTokenAccountInstruction(wallet.publicKey, toWalletAta, toWallet, outTokenMint)
+      );
+    }
+
+    // Add the transfer instruction
+    sendTokenTx.add(
+      createTransferInstruction(fromWalletAta, toWalletAta, wallet.publicKey, Number(tokenBalance))
+    );
+
+    const latestBlockHash = await connection.getLatestBlockhash('confirmed');
+    sendTokenTx.recentBlockhash = latestBlockHash.blockhash;
+    sendTokenTx.feePayer = wallet.publicKey;
+    console.log(await connection.simulateTransaction(sendTokenTx))
+    const signature = await sendAndConfirmTransaction(connection, sendTokenTx, [wallet]);
+    return signature;
   } catch (error) {
+    console.log("🚀 ~ swapOnMeteoraDYN ~ error:", error)
     return null;
+  }
+}
+
+const MAX_RETRIES = 5; // Maximum number of retries
+const RETRY_DELAY = 1000; // Delay between retries in milliseconds (1 second)
+
+async function fetchTokenAccountBalanceWithRetry(connection: Connection, fromWalletAta: PublicKey, retries = MAX_RETRIES) {
+  try {
+    const info = await connection.getTokenAccountBalance(fromWalletAta);
+    if (!info) throw new Error('No token account info found');
+    if (info.value.uiAmount == null) throw new Error('No balance found');
+    return info; // Return the balance info if successful
+  } catch (error) {
+    if (retries > 0) {
+      console.log(`Retrying... Attempts left: ${retries}`);
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY)); // Wait before retrying
+      return fetchTokenAccountBalanceWithRetry(connection, fromWalletAta, retries - 1); // Retry
+    } else {
+      throw new Error(`Failed to fetch token account balance after ${MAX_RETRIES}`);
+    }
+  }
+}
+
+async function sendTransactionWithRetry(connection: Connection, transaction: Transaction, wallet: Keypair, retries = MAX_RETRIES) {
+  try {
+    const latestBlockHash = await connection.getLatestBlockhash('confirmed');
+    transaction.recentBlockhash = latestBlockHash.blockhash;
+    const signature = await sendAndConfirmTransaction(connection, transaction, [wallet]);
+    return signature; // Return the transaction signature if successful
+  } catch (error) {
+    if (retries > 0) {
+      console.log(`Retrying... Attempts left: ${retries}`);
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY)); // Wait before retrying
+      return sendTransactionWithRetry(connection, transaction, wallet, retries - 1); // Retry
+    } else {
+      throw new Error(`Failed to send transaction after ${MAX_RETRIES}`);
+    }
   }
 }
 
@@ -279,12 +367,108 @@ export const fetchPoolOnMeteoraDYN = async (connection: Connection, poolAddress:
     });
     const ammProgram = new Program<AmmIdl>(AmmIDL, PROGRAM_ID, provider);
     let poolState = await ammProgram.account.pool.fetch(poolAddress);
-    if(poolState) {
-      return true
+    if (poolState) {
+      return poolState
     } else {
       return false
     }
   } catch (error) {
     return null;
+  }
+}
+
+export const getMarketCap = async (connection: Connection, wallet: Keypair, poolAddress: PublicKey) => {
+  const mockWallet = new Wallet(wallet);
+  const provider = new AnchorProvider(connection, mockWallet, {
+    commitment: 'confirmed',
+  });
+
+  const pool = await AmmImpl.create(provider.connection, poolAddress);
+
+  const mintA = pool.tokenAMint.address.toBase58();
+  const mintB = pool.tokenBMint.address.toBase58();
+
+  if (mintA !== 'So11111111111111111111111111111111111111112' && mintB !== 'So11111111111111111111111111111111111111112') {
+    console.log("Its not $token/$wsol pool");
+    return false
+  }
+
+  const tokenASupply = (mintA === 'So11111111111111111111111111111111111111112') ? Number(pool.tokenBMint.supply) / (10 ** pool.tokenBMint.decimals) : Number(pool.tokenAMint.supply) / (10 ** pool.tokenAMint.decimals);
+  const solprice = getSolPriceFromFile();
+
+  // Get token amounts as BN objects
+  const tokenAAmount = mintA === 'So11111111111111111111111111111111111111112' ? Number(pool.poolInfo.tokenAAmount) / (10 ** pool.tokenAMint.decimals) : Number(pool.poolInfo.tokenBAmount) / (10 ** pool.tokenBMint.decimals);
+  const tokenBAmount = mintB === 'So11111111111111111111111111111111111111112' ? Number(pool.poolInfo.tokenAAmount) / (10 ** pool.tokenAMint.decimals) : Number(pool.poolInfo.tokenBAmount) / (10 ** pool.tokenBMint.decimals);
+
+  // Calculate a / b
+  const priceSol = Number(tokenAAmount) / Number(tokenBAmount); // 18 is the desired decimal precision
+  if (!priceSol) {
+    return false
+  }
+  if (!solprice) return false
+  return Number(priceSol) * solprice * Number(tokenASupply);
+};
+
+/**
+ * Calculate the ratio of two BN numbers with a specified precision.
+ * @param a - The numerator (BN object).
+ * @param b - The denominator (BN object).
+ * @param precision - The number of decimal places to include in the result.
+ * @returns The ratio as a string with the specified precision.
+ */
+function calculateRatio(a: BN, b: BN, precision: number): string | null {
+  if (b.isZero()) {
+    return null
+  }
+
+  // Multiply 'a' by 10^precision to handle decimal places
+  const scaledA = a.mul(new BN(10).pow(new BN(precision)));
+  const result = scaledA.div(b); // Perform the division
+
+  // Convert the result to a string and insert the decimal point
+  const resultStr = result.toString();
+  const integerPart = resultStr.slice(0, -precision) || '0'; // Handle cases where result is smaller than precision
+  const decimalPart = resultStr.slice(-precision).padStart(precision, '0'); // Pad with leading zeros if necessary
+
+  return `${integerPart}.${decimalPart}`;
+}
+
+export const getTokenPriceJup = async (mint: string) => {
+  const response = await fetch(
+    `https://api.jup.ag/price/v2?ids=${mint}`
+  );
+  const data: any = await response.json();
+  console.log("🚀 ~ getTokenPriceJup ~ data:", data)
+  const solPrice = Number(data.data[mint].price)
+  console.log("🚀 ~ getTokenPriceJup ~ solPrice:", solPrice)
+}
+
+export async function getPoolDataFromMeteora(poolAddress: string) {
+  try {
+    const url = 'https://amm-v2.meteora.ag/pools';
+
+    const params = {
+      address: poolAddress.toString(),
+    };
+
+    const response = await axios.get(url, {
+      headers: {
+        accept: 'application/json',
+      },
+      params: params,
+    });
+    const meteora_pool = response.data[0];
+    // console.log('response meteora pool data:', meteora_pool);
+
+    const pairRatio =
+      meteora_pool.pool_token_amounts[0] / meteora_pool.pool_token_amounts[1];
+    console.log("🚀 ~ getPoolDataFromMeteora ~ pairRatio:", pairRatio)
+
+    return {
+      normalizedPrice: pairRatio,
+      feeRate: meteora_pool.total_fee_pct / 100,
+    };
+  } catch (error) {
+    console.error('Error fetching Meteora Pool Info:', error);
   }
 }

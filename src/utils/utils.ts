@@ -54,7 +54,7 @@ export const saveToJSONFile = (data: object, filePath: string = 'data.json'): bo
   // Convert data object to JSON string
   const jsonData = JSON.stringify(data, null, 2);  // The `null, 2` argument formats the JSON with indentation
   fs.writeFileSync(filePath, jsonData, 'utf8');
-  console.log('Data saved to JSON file.');
+  console.log('Data saved to JSON file.', filePath);
   return true;
 };
 
