@@ -8,9 +8,9 @@ import { ClientDuplexStream } from '@grpc/grpc-js';
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import dotenv from 'dotenv';
-import { BUY_AMOUNT, CHECK_IF_MINT_IS_BURNED, CHECK_IF_MINT_IS_FREEZABLE, CHECK_IF_MINT_IS_MINTABLE, CHECK_KEYWORD, CHECK_MARKET_CAP, GRPC_ENDPOINT, GRPC_TOKEN, KEYWORD, MINIMUM_MARKET_CAP, PRIVATE_KEY, RPC_ENDPOINT, SECOND_WALLET, SLIPPAGE } from "./constants";
+import { BUY_AMOUNT, CHECK_IF_MINT_IS_BURNED, CHECK_IF_MINT_IS_FREEZABLE, CHECK_IF_MINT_IS_MINTABLE, CHECK_KEYWORD, CHECK_LIQUIDITY, CHECK_MARKET_CAP, GRPC_ENDPOINT, GRPC_TOKEN, KEYWORD, MAXIMUM_LIQUIDITY, MAXIMUM_MARKET_CAP, MINIMUM_LIQUIDITY, MINIMUM_MARKET_CAP, PRIVATE_KEY, RPC_ENDPOINT, SECOND_WALLET, SLIPPAGE } from "./constants";
 import { saveToJSONFile } from "./utils";
-import { fetchPoolOnMeteoraDYN, getDlmmPool, getMarketCap, getPoolDataFromMeteora, getTokenPriceJup, swapOnMeteora, swapOnMeteoraDYN } from "./utils/meteoraSwap";
+import { fetchPoolOnMeteoraDYN, getDlmmPool, getLiquidity, getMarketCap, getPoolDataFromMeteora, getTokenPriceJup, swapOnMeteora, swapOnMeteoraDYN } from "./utils/meteoraSwap";
 import { BN } from "bn.js";
 import { checkBurn, checkFreezeAuthority, checkMintable, checkMutable, checkTicker, getFreezeAuthority } from "./utils/filters";
 import DLMM from "@meteora-ag/dlmm";
@@ -223,28 +223,45 @@ async function handleData(data: any) {
                 let checked_market = false;
                 if (CHECK_MARKET_CAP) {
                     console.log("Checking MartketCap!")
-                    const marketChecked = await fetchDynMarketUntil(poolId);
-                    if (marketChecked) {
-                        checked_market = true
-                    } else if (marketChecked === null) {
-                        return console.log("Market Cap is 0! Going to skip this token!")
-                    }
-                }
-                console.log("!checked_market || CHECK_MARKET_CAP : ", !checked_market || CHECK_MARKET_CAP)
-                if (!checked_market || CHECK_MARKET_CAP) {
                     const poolPub = new PublicKey(poolId);
-                    const buyAmount = new BN(BUY_AMOUNT * LAMPORTS_PER_SOL);
-                    console.log("Going to buy!");
-                    const sig = await swapOnMeteoraDYN(solanaConnection, poolPub, keypair, buyAmount, false, secondPub, SLIPPAGE);
-                    if (sig) {
-                        console.log("Buy Success :", `https://solscan.io/tx/${sig}`);
-                        return
-                    } else {
-                        console.log("Buy failed!")
-                        return
+                    const marketcap = await getMarketCap(solanaConnection, keypair, poolPub);
+                    console.log("MarketCap => ", marketcap?marketcap.toFixed(2):0)
+                    if (!marketcap || !(marketcap >= MINIMUM_MARKET_CAP && marketcap <= MAXIMUM_MARKET_CAP)) {
+                        return console.log("This token is out of our range! going to skip!")
                     }
+                    checked_market = true;
                 }
-                console.log("\n")
+                
+                let checked_liquidity = false;
+                if (CHECK_LIQUIDITY) {
+                    console.log("Checking Liquidity!")
+                    const poolPub = new PublicKey(poolId);
+                    const liquidity = await getLiquidity(solanaConnection, keypair, poolPub);
+                    console.log("Liquidity => ", liquidity?liquidity.toFixed(2):0, 'Sol')
+                    if (!liquidity || !(liquidity >= MINIMUM_LIQUIDITY && liquidity <= MAXIMUM_LIQUIDITY)) {
+                        return console.log("This token is out of our range! going to skip!")
+                    }
+                    checked_liquidity = true;
+                }
+                if (!(checked_market && !CHECK_MARKET_CAP)) {
+                    return
+                }
+                if (!(checked_liquidity && !CHECK_LIQUIDITY)) {
+                    return
+                }
+                const poolPub = new PublicKey(poolId);
+                const buyAmount = new BN(BUY_AMOUNT * LAMPORTS_PER_SOL);
+                console.log("Going to buy!");
+                const sig = await swapOnMeteoraDYN(solanaConnection, poolPub, keypair, buyAmount, false, secondPub, SLIPPAGE);
+                if (sig) {
+                    console.log("Buy Success :", `https://solscan.io/tx/${sig}`);
+                    console.log("\n")
+                    return
+                } else {
+                    console.log("Buy failed!")
+                    console.log("\n")
+                    return
+                }
             }
         }
     } catch (error) {
@@ -307,6 +324,8 @@ const fetchDynMarketUntil = async (poolId: string) => {
         }, 1000);
     })
 }
+
+
 
 // async function getTokenPrice() {
 //     const poolPub = new PublicKey('2J4tdRpBEADVJfgTAGYYE9dpbDkpyDc5jiBpBGGR96Np')

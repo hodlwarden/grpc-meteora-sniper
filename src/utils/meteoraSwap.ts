@@ -409,6 +409,28 @@ export const getMarketCap = async (connection: Connection, wallet: Keypair, pool
   return Number(priceSol) * solprice * Number(tokenASupply);
 };
 
+export const getLiquidity = async (connection: Connection, wallet: Keypair, poolAddress: PublicKey) => {
+  const mockWallet = new Wallet(wallet);
+  const provider = new AnchorProvider(connection, mockWallet, {
+    commitment: 'confirmed',
+  });
+
+  const pool = await AmmImpl.create(provider.connection, poolAddress);
+
+  const mintA = pool.tokenAMint.address.toBase58();
+  const mintB = pool.tokenBMint.address.toBase58();
+
+  if (mintA !== 'So11111111111111111111111111111111111111112' && mintB !== 'So11111111111111111111111111111111111111112') {
+    console.log("Its not $token/$wsol pool");
+    return false
+  }
+
+  // Get token amounts as BN objects
+  const tokenBAmount = mintB === 'So11111111111111111111111111111111111111112' ? Number(pool.poolInfo.tokenAAmount) / (10 ** pool.tokenAMint.decimals) : Number(pool.poolInfo.tokenBAmount) / (10 ** pool.tokenBMint.decimals);
+
+  return tokenBAmount
+};
+
 /**
  * Calculate the ratio of two BN numbers with a specified precision.
  * @param a - The numerator (BN object).

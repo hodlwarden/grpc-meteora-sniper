@@ -16,6 +16,11 @@ export const CHECK_IF_MINT_IS_BURNED = retrieveEnvVariable('CHECK_IF_MINT_IS_BUR
 
 export const CHECK_MARKET_CAP = retrieveEnvVariable('CHECK_MARKET_CAP', logger) === 'true'
 export const MINIMUM_MARKET_CAP = Number(retrieveEnvVariable('MINIMUM_MARKET_CAP', logger))
+export const MAXIMUM_MARKET_CAP = Number(retrieveEnvVariable('MAXIMUM_MARKET_CAP', logger))
+
+export const CHECK_LIQUIDITY = retrieveEnvVariable('CHECK_LIQUIDITY', logger) === 'true'
+export const MINIMUM_LIQUIDITY = Number(retrieveEnvVariable('MINIMUM_LIQUIDITY', logger))
+export const MAXIMUM_LIQUIDITY = Number(retrieveEnvVariable('MAXIMUM_LIQUIDITY', logger))
 
 export const CHECK_KEYWORD = retrieveEnvVariable('CHECK_KEYWORD', logger) === 'true'
 export const KEYWORD = retrieveEnvVariable('KEYWORD', logger);
